@@ -41,6 +41,7 @@ export function MasterPage({ sessionId, onBack }: MasterPageProps) {
 
   const currentUrlRef = useRef("");
   const syncEnabledRef = useRef(syncEnabled);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const updateSyncState = useUpdateSyncState();
   const { data: clientCount } = useGetClientCount(sessionId, true);
@@ -62,13 +63,31 @@ export function MasterPage({ sessionId, onBack }: MasterPageProps) {
     setIframeKey((k) => k + 1);
     setUrlInput(url);
     currentUrlRef.current = url;
-    if (syncEnabledRef.current) {
-      pushSync(url, true);
-    }
+    // Always push URL to backend so clients can see master's current page
+    pushSync(url, syncEnabledRef.current);
   };
 
+  // When iframe navigates to a new page (link click inside iframe),
+  // try to detect the new URL and sync it to clients.
   const handleIframeLoad = () => {
     setIframeBlocked(false);
+    try {
+      const newUrl = iframeRef.current?.contentWindow?.location?.href;
+      if (
+        newUrl &&
+        newUrl !== "about:blank" &&
+        newUrl !== currentUrlRef.current
+      ) {
+        currentUrlRef.current = newUrl;
+        setUrlInput(newUrl);
+        pushSync(newUrl, syncEnabledRef.current);
+        if (syncEnabledRef.current) {
+          toast.success("Naya URL clients ko bheja gaya");
+        }
+      }
+    } catch {
+      // Cross-origin iframe -- can't read URL, that's ok
+    }
   };
 
   const handleIframeError = () => {
@@ -84,9 +103,15 @@ export function MasterPage({ sessionId, onBack }: MasterPageProps) {
       position: { x: 0, y: 0 },
       syncEnabled: val,
     });
-    toast.success(
-      val ? "Sync enabled — clients will follow your URL" : "Sync disabled",
-    );
+    if (val) {
+      toast.success(
+        currentUrlRef.current
+          ? `Sync ON — clients ab "${currentUrlRef.current.slice(0, 40)}" par jayenge`
+          : "Sync ON — agla URL clients ko bhi milega",
+      );
+    } else {
+      toast.info("Sync OFF");
+    }
   };
 
   const handleCopy = () => {
@@ -222,12 +247,13 @@ export function MasterPage({ sessionId, onBack }: MasterPageProps) {
 
         {iframeSrc && !iframeBlocked && (
           <iframe
+            ref={iframeRef}
             key={iframeKey}
             src={iframeSrc}
             className="w-full h-full border-0"
             onLoad={handleIframeLoad}
             onError={handleIframeError}
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-top-navigation"
             title="Web Viewer"
             data-ocid="master.canvas_target"
           />

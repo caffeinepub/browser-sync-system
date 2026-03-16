@@ -28,6 +28,7 @@ export function ClientPage({ sessionId, clientId, onBack }: ClientPageProps) {
   const [iframeBlocked, setIframeBlocked] = useState(false);
   const [iframeKey, setIframeKey] = useState(0);
   const prevSyncUrl = useRef("");
+  const isFirstLoad = useRef(true);
 
   const disconnectClient = useDisconnectClient();
   const { data: syncState } = useGetSyncState(sessionId, synced);
@@ -42,7 +43,20 @@ export function ClientPage({ sessionId, clientId, onBack }: ClientPageProps) {
   useEffect(() => {
     if (!synced || !syncState) return;
     const { master } = syncState;
+
+    // On first connect: load master's current URL regardless of syncEnabled
+    // This "places" the client at master's current page
+    if (isFirstLoad.current && master.url) {
+      isFirstLoad.current = false;
+      prevSyncUrl.current = master.url;
+      loadUrl(master.url);
+      toast.info("Master ki current URL par placed kiya gaya");
+      return;
+    }
+
+    // Subsequent syncs: only follow if master has sync enabled and URL changed
     if (
+      !isFirstLoad.current &&
       master.syncEnabled &&
       master.url &&
       master.url !== prevSyncUrl.current
@@ -75,6 +89,7 @@ export function ClientPage({ sessionId, clientId, onBack }: ClientPageProps) {
   const handleReconnect = () => {
     setSynced(true);
     prevSyncUrl.current = "";
+    isFirstLoad.current = true;
     toast.success("Reconnected to sync");
   };
 
