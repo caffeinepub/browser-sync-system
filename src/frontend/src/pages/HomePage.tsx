@@ -20,11 +20,22 @@ interface HomePageProps {
   onEnterClient: (sessionId: string, clientId: bigint) => void;
 }
 
+const isCanisterStopped = (err: unknown) => {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes("IC0508") || msg.toLowerCase().includes("is stopped");
+};
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 export function HomePage({ onEnterMaster, onEnterClient }: HomePageProps) {
   const [showJoinInput, setShowJoinInput] = useState(false);
   const [sessionCode, setSessionCode] = useState("");
   const [joinError, setJoinError] = useState("");
   const [masterError, setMasterError] = useState("");
+  const [retrying, setRetrying] = useState(false);
+  const [retryMsg, setRetryMsg] = useState("");
+  const [joinRetrying, setJoinRetrying] = useState(false);
+  const [joinRetryMsg, setJoinRetryMsg] = useState("");
 
   const { actor, isFetching: actorLoading } = useActor();
   const createSession = useCreateSession();
@@ -36,17 +47,56 @@ export function HomePage({ onEnterMaster, onEnterClient }: HomePageProps) {
       return;
     }
     setMasterError("");
+    setRetrying(false);
+    setRetryMsg("");
     try {
       const id = await createSession.mutateAsync();
       onEnterMaster(id);
     } catch (err) {
       console.error("createSession error:", err);
-      const msg =
-        err instanceof Error
-          ? err.message
-          : "Session create nahi hui. Dobara try karein.";
-      setMasterError(msg);
-      toast.error("Session create nahi hui.");
+      if (isCanisterStopped(err)) {
+        // Auto-retry up to 4 times -- canister is waking up
+        setRetrying(true);
+        let success = false;
+        for (let attempt = 1; attempt <= 4; attempt++) {
+          setRetryMsg(`Server start ho raha hai... (${attempt}/4)`);
+          await sleep(2500);
+          try {
+            const id = await createSession.mutateAsync();
+            onEnterMaster(id);
+            success = true;
+            break;
+          } catch (retryErr) {
+            if (!isCanisterStopped(retryErr)) {
+              // Different error -- stop retrying
+              setRetrying(false);
+              setRetryMsg("");
+              setMasterError(
+                retryErr instanceof Error
+                  ? retryErr.message
+                  : "Session create nahi hui. Dobara try karein.",
+              );
+              toast.error("Session create nahi hui.");
+              return;
+            }
+          }
+        }
+        setRetrying(false);
+        setRetryMsg("");
+        if (!success) {
+          setMasterError(
+            "Server abhi start nahi hua. Thodi der baad try karein.",
+          );
+          toast.error("Server unavailable. Baad mein try karein.");
+        }
+      } else {
+        const msg =
+          err instanceof Error
+            ? err.message
+            : "Session create nahi hui. Dobara try karein.";
+        setMasterError(msg);
+        toast.error("Session create nahi hui.");
+      }
     }
   };
 
@@ -56,15 +106,50 @@ export function HomePage({ onEnterMaster, onEnterClient }: HomePageProps) {
       return;
     }
     setJoinError("");
+    setJoinRetrying(false);
+    setJoinRetryMsg("");
     try {
       const clientId = await joinSession.mutateAsync(sessionCode.trim());
       onEnterClient(sessionCode.trim(), clientId);
-    } catch {
-      setJoinError("Could not join. Check the session code.");
+    } catch (err) {
+      console.error("joinSession error:", err);
+      if (isCanisterStopped(err)) {
+        // Auto-retry up to 4 times -- canister is waking up
+        setJoinRetrying(true);
+        let success = false;
+        for (let attempt = 1; attempt <= 4; attempt++) {
+          setJoinRetryMsg(`Server start ho raha hai... (${attempt}/4)`);
+          await sleep(2500);
+          try {
+            const clientId = await joinSession.mutateAsync(sessionCode.trim());
+            onEnterClient(sessionCode.trim(), clientId);
+            success = true;
+            break;
+          } catch (retryErr) {
+            if (!isCanisterStopped(retryErr)) {
+              setJoinRetrying(false);
+              setJoinRetryMsg("");
+              setJoinError("Could not join. Check the session code.");
+              return;
+            }
+          }
+        }
+        setJoinRetrying(false);
+        setJoinRetryMsg("");
+        if (!success) {
+          setJoinError(
+            "Server abhi start nahi hua. Thodi der baad try karein.",
+          );
+          toast.error("Server unavailable. Baad mein try karein.");
+        }
+      } else {
+        setJoinError("Could not join. Check the session code.");
+      }
     }
   };
 
-  const masterLoading = actorLoading || createSession.isPending;
+  const masterLoading = actorLoading || createSession.isPending || retrying;
+  const joinLoading = joinSession.isPending || joinRetrying;
 
   return (
     <div className="min-h-screen bg-background grid-bg flex flex-col items-center justify-center p-4 relative overflow-hidden">
@@ -108,9 +193,11 @@ export function HomePage({ onEnterMaster, onEnterClient }: HomePageProps) {
               )}
               {actorLoading
                 ? "Loading..."
-                : createSession.isPending
-                  ? "Creating Session..."
-                  : "Start as Master"}
+                : retrying
+                  ? retryMsg || "Server start ho raha hai..."
+                  : createSession.isPending
+                    ? "Creating Session..."
+                    : "Start as Master"}
               {!masterLoading && <ArrowRight className="w-4 h-4 ml-auto" />}
             </Button>
           </motion.div>
@@ -124,7 +211,7 @@ export function HomePage({ onEnterMaster, onEnterClient }: HomePageProps) {
             >
               <div className="flex items-start gap-2">
                 <AlertCircle className="w-4 h-4 text-destructive flex-shrink-0 mt-0.5" />
-                <p className="text-xs text-destructive leading-relaxed break-all">
+                <p className="text-xs text-destructive leading-relaxed">
                   {masterError}
                 </p>
               </div>
@@ -208,12 +295,17 @@ export function HomePage({ onEnterMaster, onEnterClient }: HomePageProps) {
                   <Button
                     data-ocid="home.join_button"
                     onClick={handleJoin}
-                    disabled={joinSession.isPending}
+                    disabled={joinLoading}
                     className="flex-1 bg-accent/10 hover:bg-accent/20 text-accent border border-accent/40"
                     variant="outline"
                   >
-                    {joinSession.isPending ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
+                    {joinLoading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                        {joinRetrying
+                          ? joinRetryMsg || "Server start ho raha hai..."
+                          : "Joining..."}
+                      </>
                     ) : (
                       "Join Session"
                     )}
